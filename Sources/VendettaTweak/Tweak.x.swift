@@ -47,50 +47,57 @@ class LoadHook: ClassHook<RCTCxxBridge> {
     }
 
     let documentDirectory = getDocumentDirectory()
-
-    var vendetta = try? Data(contentsOf: documentDirectory.appendingPathComponent("vendetta.js"))
-
-    let group = DispatchGroup()
-
-    group.enter()
-    var vendettaUrl: URL
+    var vendetta: Data?
+    var vendettaUrl: URL?
     if loaderConfig.customLoadUrl.enabled {
+      vendetta = try? Data(contentsOf: documentDirectory.appendingPathComponent("vendetta.js"));
       os_log(
         "Custom load URL enabled, with URL %{public}@ ", log: vendettaLog, type: .info,
         loaderConfig.customLoadUrl.url.absoluteString)
       vendettaUrl = loaderConfig.customLoadUrl.url
     } else {
-      vendettaUrl = URL(
-        string: "https://raw.githubusercontent.com/vendetta-mod/builds/master/vendetta.js")!
+      if let basePath = vendettaPatchesBundle.url(forResource: "vendetta", withExtension: "js") {
+        os_log("Using bundled vendetta.js", log: vendettaLog, type: .info)
+        vendetta = try! Data(contentsOf: basePath)
+      } else {
+        os_log("Fallback github vendetta.js (OUTDATED!)", log: vendettaLog, type: .info)
+        vendettaUrl = URL(
+          string: "https://raw.githubusercontent.com/vendetta-mod/builds/master/vendetta.js")!
+      }
     }
 
-    os_log("Fetching vendetta.js", log: vendettaLog, type: .info)
-    var vendettaRequest = URLRequest(
-      url: vendettaUrl, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 3.0)
+    if vendetta == nil && vendettaUrl != nil {
+      let group = DispatchGroup()
+      group.enter()
 
-    if let vendettaEtag = try? String(
-      contentsOf: documentDirectory.appendingPathComponent("vendetta_etag.txt")), vendetta != nil
-    {
-      vendettaRequest.addValue(vendettaEtag, forHTTPHeaderField: "If-None-Match")
-    }
+      os_log("Fetching vendetta.js", log: vendettaLog, type: .info)
+      var vendettaRequest = URLRequest(
+        url: vendettaUrl!, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 3.0)
 
-    let vendettaTask = URLSession.shared.dataTask(with: vendettaRequest) { data, response, error in
-      if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-        os_log("Successfully fetched vendetta.js", log: vendettaLog, type: .debug)
-        vendetta = data
-        try? vendetta?.write(to: documentDirectory.appendingPathComponent("vendetta.js"))
-
-        let etag = httpResponse.allHeaderFields["Etag"] as? String
-        try? etag?.write(
-          to: documentDirectory.appendingPathComponent("vendetta_etag.txt"), atomically: true,
-          encoding: .utf8)
+      if let vendettaEtag = try? String(
+        contentsOf: documentDirectory.appendingPathComponent("vendetta_etag.txt")), vendetta != nil
+      {
+        vendettaRequest.addValue(vendettaEtag, forHTTPHeaderField: "If-None-Match")
       }
 
-      group.leave()
-    }
+      let vendettaTask = URLSession.shared.dataTask(with: vendettaRequest) { data, response, error in
+        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+          os_log("Successfully fetched vendetta.js", log: vendettaLog, type: .debug)
+          vendetta = data
+          try? vendetta?.write(to: documentDirectory.appendingPathComponent("vendetta.js"))
 
-    vendettaTask.resume()
-    group.wait()
+          let etag = httpResponse.allHeaderFields["Etag"] as? String
+          try? etag?.write(
+            to: documentDirectory.appendingPathComponent("vendetta_etag.txt"), atomically: true,
+            encoding: .utf8)
+        }
+
+        group.leave()
+      }
+
+      vendettaTask.resume()
+      group.wait()
+    }
 
     os_log("Executing original script", log: vendettaLog, type: .info)
     orig.executeApplicationScript(script, url: url, async: async)
